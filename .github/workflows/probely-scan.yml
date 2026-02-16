@@ -1,0 +1,58 @@
+# Probely DAST scan – remote target, blocking (CLI only)
+# Docs: https://github.com/Probely/cicd-pipeline-scan-examples
+
+name: Probely Scan
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  probely:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Probely CLI
+        run: |
+          pip install probely
+          probely targets get --api-key "${{ secrets.PROBELY_API_KEY }}"
+
+      - name: Start scan
+        id: start
+        run: |
+          for i in $(seq 1 20); do
+            SCAN_ID=$(probely targets start-scan "${{ vars.PROBELY_TARGET_ID }}" -o IDS_ONLY --api-key "${{ secrets.PROBELY_API_KEY }}")
+            if [ -n "$SCAN_ID" ] && [ ! -f "$SCAN_ID" ]; then
+              echo "scan_id=$SCAN_ID" >> $GITHUB_OUTPUT
+              echo "Scan started: $SCAN_ID"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Failed to start scan"
+          exit 1
+
+      - name: Wait for scan to complete
+        run: |
+          SCAN_ID="${{ steps.start.outputs.scan_id }}"
+          while true; do
+            STATUS=$(probely scans get "$SCAN_ID" --api-key "${{ secrets.PROBELY_API_KEY }}" -o JSON | jq -r '.status')
+            echo "Status: $STATUS"
+            case "$STATUS" in
+              started|queued|resuming|pausing) sleep 30; ;;
+              *) break; ;;
+            esac
+          done
+
+      - name: Fail on high/critical findings (optional)
+        run: |
+          SCAN_ID="${{ steps.start.outputs.scan_id }}"
+          HIGH=$(probely scans get "$SCAN_ID" --api-key "${{ secrets.PROBELY_API_KEY }}" -o JSON | jq -r '.highs // 0')
+          CRIT=$(probely scans get "$SCAN_ID" --api-key "${{ secrets.PROBELY_API_KEY }}" -o JSON | jq -r '.criticals // 0')
+          echo "High: $HIGH, Critical: $CRIT"
+          if [ "$HIGH" -gt 0 ] || [ "$CRIT" -gt 0 ]; then
+            echo "Failing pipeline due to high/critical vulnerabilities"
+            exit 1
+          fi
