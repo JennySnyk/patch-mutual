@@ -46,6 +46,48 @@ jobs:
             esac
           done
 
+      - name: Scan results summary
+        run: |
+          SCAN_ID="${{ steps.start.outputs.scan_id }}"
+          API_KEY="${{ secrets.PROBELY_API_KEY }}"
+          SCAN_JSON=$(probely scans get "$SCAN_ID" --api-key "$API_KEY" -o JSON)
+          STATUS=$(echo "$SCAN_JSON" | jq -r '.status')
+          CRIT=$(echo "$SCAN_JSON" | jq -r '.criticals // 0')
+          HIGH=$(echo "$SCAN_JSON" | jq -r '.highs // 0')
+          MED=$(echo "$SCAN_JSON" | jq -r '.mediums // 0')
+          LOW=$(echo "$SCAN_JSON" | jq -r '.lows // 0')
+          {
+            echo "## Probely DAST scan results"
+            echo ""
+            echo "| | Count |"
+            echo "|---|---|"
+            echo "| **Status** | $STATUS |"
+            echo "| **Critical** | $CRIT |"
+            echo "| **High** | $HIGH |"
+            echo "| **Medium** | $MED |"
+            echo "| **Low** | $LOW |"
+            echo ""
+            echo "**Scan ID:** \`$SCAN_ID\`"
+            echo ""
+            echo "### Findings"
+            echo ""
+          } >> $GITHUB_STEP_SUMMARY
+          FINDINGS_JSON=$(probely findings get --f-scans "$SCAN_ID" --api-key "$API_KEY" -o JSON 2>/dev/null) || true
+          if [ -n "$FINDINGS_JSON" ] && echo "$FINDINGS_JSON" | jq -e '.results | length > 0' >/dev/null 2>&1; then
+            echo "| Severity | Finding |" >> $GITHUB_STEP_SUMMARY
+            echo "|----------|---------|" >> $GITHUB_STEP_SUMMARY
+            echo "$FINDINGS_JSON" | jq -r '.results[]? | "| \(.severity) | \(.definition.name // .definition_id // "—") |"' >> $GITHUB_STEP_SUMMARY
+          elif [ -n "$FINDINGS_JSON" ] && echo "$FINDINGS_JSON" | jq -e 'length > 0' >/dev/null 2>&1; then
+            echo "| Severity | Finding |" >> $GITHUB_STEP_SUMMARY
+            echo "|----------|---------|" >> $GITHUB_STEP_SUMMARY
+            echo "$FINDINGS_JSON" | jq -r '.[]? | "| \(.severity) | \(.definition.name // .definition_id // "—") |"' >> $GITHUB_STEP_SUMMARY
+          else
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            probely findings get --f-scans "$SCAN_ID" --api-key "$API_KEY" -o TABLE 2>/dev/null >> $GITHUB_STEP_SUMMARY || echo "No findings or unable to list." >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "Results written to job summary."
+
       - name: Fail on high/critical findings (optional)
         run: |
           SCAN_ID="${{ steps.start.outputs.scan_id }}"
